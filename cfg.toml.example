@@ -1,0 +1,12 @@
+[server]
+game = "factorio"
+address = "192.168.0.19:34198"
+password = "PasswordHere"
+ignore = ["MyUsernameHere", "AnotherUsername"]
+name = "Factorio Server"
+seconds = 30
+
+[notify]
+api = "telegramkeyhere"
+chat = 2542342
+prefix = "These users have just logged in: "
