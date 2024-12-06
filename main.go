@@ -18,7 +18,12 @@ import (
 	"github.com/nikoksr/notify/service/telegram"
 )
 
-type Config struct {
+type (
+	Config struct {
+		Servers map[string]Server
+		Notify  Notify
+	}
+
 	Server struct {
 		Address  string `toml:"address"`
 		Password string `toml:"password"`
@@ -32,7 +37,7 @@ type Config struct {
 		Chat   int64  `toml:"chat"`
 		Prefix string `toml:"prefix"`
 	}
-}
+)
 
 var alreadyOnline []string
 
@@ -55,30 +60,49 @@ func loadConfig() (*Config, error) {
 	if err != nil {
 		panic(err)
 	}
-	//TODO: Validate config options
+	//TODO: Deep Validating config (Servers, Notifications, etc)
+	log.Println("Verifying Config")
+	for _, server := range conf.Servers {
+		log.Println("Verifying Server: \"" + server.Name + "\"")
+		if !checkServer(&server) {
+			log.Fatal("Could not connect to " + server.Address + " for " + server.Name)
+			return nil, fmt.Errorf("Could not connect to " + server.Address)
+		}
+	}
 
 	return &conf, nil
 }
 
+func checkServer(cfg *Server) bool {
+	conn, err := rcon.Dial(cfg.Address, cfg.Password)
+	if err != nil {
+		log.Println(err)
+		return false
+	}
+	defer conn.Close()
+	return true
+}
+
 type PlayerCheckService struct {
-	cfg       *Config
+	serverCfg *Server
+	notifyCfg *Notify
 	scheduler *gocron.Scheduler
 }
 
-func NewPlayerCheckService(cfg *Config) *PlayerCheckService {
+func NewPlayerCheckService(serverCfg *Server, notifyCfg *Notify) *PlayerCheckService {
 	scheduler := gocron.NewScheduler(time.UTC)
-	playerCheckService := &PlayerCheckService{cfg: cfg, scheduler: scheduler}
+	playerCheckService := &PlayerCheckService{serverCfg: serverCfg, notifyCfg: notifyCfg, scheduler: scheduler}
 
-	scheduler.Every(cfg.Server.Seconds).Seconds().Do(func() {
+	scheduler.Every(serverCfg.Seconds).Seconds().Do(func() {
 		log.Print("Checking for new players")
 
-		newPlayers := checkPlayers(playerCheckService.cfg)
+		newPlayers := checkPlayers(playerCheckService.serverCfg)
 
 		if len(newPlayers) > 0 {
 			log.Print("New Players: " + strings.Join(newPlayers, ", "))
 			err := notify.Send(context.Background(),
-				playerCheckService.cfg.Server.Name,
-				playerCheckService.cfg.Notify.Prefix+" "+strings.Join(newPlayers, ", "))
+				playerCheckService.serverCfg.Name,
+				playerCheckService.notifyCfg.Prefix+" "+strings.Join(newPlayers, ", "))
 
 			if err != nil {
 				log.Fatal(err)
@@ -90,8 +114,8 @@ func NewPlayerCheckService(cfg *Config) *PlayerCheckService {
 	return playerCheckService
 }
 
-func callServer(cfg *Config) string {
-	conn, err := rcon.Dial(cfg.Server.Address, cfg.Server.Password)
+func callServer(cfg *Server) string {
+	conn, err := rcon.Dial(cfg.Address, cfg.Password)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -103,11 +127,11 @@ func callServer(cfg *Config) string {
 	return response
 }
 
-func checkPlayers(cfg *Config) []string {
+func checkPlayers(cfg *Server) []string {
 
 	response := callServer(cfg)
 
-	players := parsePlayers(response, cfg.Server.Ignore)
+	players := parsePlayers(response, cfg.Ignore)
 
 	if len(players) == 0 {
 		return nil
@@ -126,13 +150,15 @@ func main() {
 	log.Print("Completed Loading Config")
 
 	log.Print("Loading Notifications")
-	setupNotifications(cfg)
+	setupNotifications(&cfg.Notify)
 	log.Print("Completed Loading Notifications")
 
-	log.Print("Starting Player Check Service")
-	playerCheckService := NewPlayerCheckService(cfg)
-	log.Print("Completed Starting Player Check Service")
-	defer playerCheckService.scheduler.Stop()
+	for _, server := range cfg.Servers {
+		log.Print("Starting Player Check Service")
+		playerCheckService := NewPlayerCheckService(&server, &cfg.Notify)
+		log.Print("Completed Starting Player Check Service")
+		defer playerCheckService.scheduler.Stop()
+	}
 
 	stopChan := make(chan os.Signal, 1)
 	signal.Notify(stopChan, os.Interrupt, syscall.SIGTERM)
@@ -145,13 +171,14 @@ func main() {
 
 }
 
-func setupNotifications(cfg *Config) {
-	telegramService, err := telegram.New(cfg.Notify.Api)
+func setupNotifications(notifyCfg *Notify) {
+	log.Println("Joining chat: " + string(notifyCfg.Chat))
+	telegramService, err := telegram.New(notifyCfg.Api)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	telegramService.AddReceivers(cfg.Notify.Chat)
+	telegramService.AddReceivers(notifyCfg.Chat)
 	notify.UseServices(telegramService)
 
 }
