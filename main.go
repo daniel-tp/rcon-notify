@@ -1,19 +1,13 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
-	"slices"
-	"strings"
 	"syscall"
-	"time"
 
 	"github.com/BurntSushi/toml"
-	"github.com/go-co-op/gocron"
-	"github.com/gorcon/rcon"
 	"github.com/nikoksr/notify"
 	"github.com/nikoksr/notify/service/telegram"
 )
@@ -47,11 +41,11 @@ func loadConfig() (*Config, error) {
 	if _, err := os.Stat("cfg.toml"); os.IsNotExist(err) {
 		exampledata, err := os.ReadFile("cfg.toml.example")
 		if err != nil {
-			log.Fatal(err)
+			return nil, err
 		}
 		err = os.WriteFile("cfg.toml", exampledata, 0644)
 		if err != nil {
-			log.Fatal(err)
+			return nil, err
 		}
 		return nil, fmt.Errorf("cfg.toml not found, created new cfg.toml from example file, please fill in")
 	}
@@ -66,79 +60,11 @@ func loadConfig() (*Config, error) {
 		log.Println("Verifying Server: \"" + server.Name + "\"")
 		if !checkServer(&server) {
 			log.Fatal("Could not connect to " + server.Address + " for " + server.Name)
-			return nil, fmt.Errorf("Could not connect to " + server.Address)
+			return nil, fmt.Errorf("Could not connect to %s", server.Address)
 		}
 	}
 
 	return &conf, nil
-}
-
-func checkServer(cfg *Server) bool {
-	conn, err := rcon.Dial(cfg.Address, cfg.Password)
-	if err != nil {
-		log.Println(err)
-		return false
-	}
-	defer conn.Close()
-	return true
-}
-
-type PlayerCheckService struct {
-	serverCfg *Server
-	notifyCfg *Notify
-	scheduler *gocron.Scheduler
-}
-
-func NewPlayerCheckService(serverCfg *Server, notifyCfg *Notify) *PlayerCheckService {
-	scheduler := gocron.NewScheduler(time.UTC)
-	playerCheckService := &PlayerCheckService{serverCfg: serverCfg, notifyCfg: notifyCfg, scheduler: scheduler}
-
-	scheduler.Every(serverCfg.Seconds).Seconds().Do(func() {
-		log.Print("Checking for new players")
-
-		newPlayers := checkPlayers(playerCheckService.serverCfg)
-
-		if len(newPlayers) > 0 {
-			log.Print("New Players: " + strings.Join(newPlayers, ", "))
-			err := notify.Send(context.Background(),
-				playerCheckService.serverCfg.Name,
-				playerCheckService.notifyCfg.Prefix+" "+strings.Join(newPlayers, ", "))
-
-			if err != nil {
-				log.Fatal(err)
-			}
-		}
-
-	})
-	scheduler.StartAsync()
-	return playerCheckService
-}
-
-func callServer(cfg *Server) string {
-	conn, err := rcon.Dial(cfg.Address, cfg.Password)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer conn.Close()
-	response, err := conn.Execute("/players o")
-	if err != nil {
-		log.Fatal(err)
-	}
-	return response
-}
-
-func checkPlayers(cfg *Server) []string {
-
-	response := callServer(cfg)
-
-	players := parsePlayers(response, cfg.Ignore)
-
-	if len(players) == 0 {
-		return nil
-	}
-
-	newPlayers := filterNewPlayers(players)
-	return newPlayers
 }
 
 func main() {
@@ -172,7 +98,6 @@ func main() {
 }
 
 func setupNotifications(notifyCfg *Notify) {
-	log.Println("Joining chat: " + string(notifyCfg.Chat))
 	telegramService, err := telegram.New(notifyCfg.Api)
 	if err != nil {
 		log.Fatal(err)
@@ -181,41 +106,4 @@ func setupNotifications(notifyCfg *Notify) {
 	telegramService.AddReceivers(notifyCfg.Chat)
 	notify.UseServices(telegramService)
 
-}
-
-func filterNewPlayers(players []string) []string {
-	var newPlayers []string
-	for _, player := range players {
-		if !slices.Contains(alreadyOnline, player) {
-			alreadyOnline = append(alreadyOnline, player)
-
-			newPlayers = append(newPlayers, player)
-		}
-	}
-	return newPlayers
-}
-
-func parsePlayers(response string, ignore []string) []string {
-	lines := strings.Split(response, "\n")
-	var players []string
-	for index, line := range lines {
-		if strings.HasPrefix(line, "Online players") {
-			players = lines[index+1:]
-
-			break
-		}
-	}
-	var filteredPlayers []string
-	for _, player := range players {
-		if player == "" {
-			continue
-		}
-
-		player = strings.TrimSuffix(player, " (online)")
-
-		if !slices.Contains(ignore, player) {
-			filteredPlayers = append(filteredPlayers, player)
-		}
-	}
-	return filteredPlayers
 }
